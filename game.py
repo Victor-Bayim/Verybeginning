@@ -5,9 +5,26 @@ import threading
 import time
 import json
 import os
+import copy  
 
-# 获取脚本所在目录
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+from threading import Lock  # 导入锁用于线程同步
+
+def resource_path(relative_path):
+    """获取资源文件的绝对路径，兼容打包后的环境"""
+    try:
+        # PyInstaller打包时，资源文件会被临时存储在sys._MEIPASS目录中
+        base_path = sys._MEIPASS
+    except Exception:
+        # 未打包时，使用脚本所在的目录
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+
+# 导入锁用于线程同步
+from threading import Lock
+
+# 获取脚本所在目录，是之前版本的功能，忽略就行
+#BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 pygame.init()
 
@@ -28,8 +45,16 @@ STATE_NAME_INPUT = 'name_input'  # 名字输入
 current_state = STATE_MAIN_MENU
 
 # 文件路径
-LEADERBOARD_FILE = os.path.join(BASE_DIR, 'leaderboard.json')
-SAVEGAME_FILE = os.path.join(BASE_DIR, 'savegame.json')
+#SAVEGAME_FILE = os.path.join(BASE_DIR, 'savegame.json')
+# 获取数据目录
+DATA_DIR = get_data_directory()
+
+# 确保数据目录存在
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# 定义保存文件路径
+SAVEGAME_FILE = os.path.join(DATA_DIR, 'savegame.json')
+
 
 # 游戏设置
 TILE_SIZE = 60  # 图案大小
@@ -57,7 +82,7 @@ clock = pygame.time.Clock()
 FPS = 60  # 提高帧率，使动画更流畅
 
 # 加载字体
-font_path = os.path.join(BASE_DIR, 'fonts', 'NotoSansCJKsc-VF.otf')  # 使用绝对路径
+font_path = resource_path(os.path.join('fonts', 'NotoSansCJKsc-VF.otf'))  # 使用resource_path获取路径
 try:
     font = pygame.font.Font(font_path, 24)       # 普通字体
     title_font = pygame.font.Font(font_path, 48) # 标题字体
@@ -71,7 +96,7 @@ except FileNotFoundError:
 # 加载图案图片
 pattern_images = []
 for i in range(1, 9):  # 假设有8种图案
-    image_path = os.path.join(BASE_DIR, f"pattern_{i}.png")
+    image_path = resource_path(f"pattern_{i}.png")
     if not os.path.exists(image_path):
         print(f"图案图片不存在: {image_path}")
         pygame.quit()
@@ -86,7 +111,7 @@ for i in range(1, 9):  # 假设有8种图案
         sys.exit()
 
 # 加载主菜单背景图片
-menu_background_path = os.path.join(BASE_DIR, 'menu_background.png')
+menu_background_path = resource_path('menu_background.png')
 try:
     menu_background = pygame.image.load(menu_background_path).convert()
     menu_background = pygame.transform.scale(menu_background, (WIDTH, HEIGHT))  # 缩放至屏幕大小
@@ -96,7 +121,7 @@ except pygame.error:
     sys.exit()
 
 # 加载胜利界面背景图片
-victory_background_path = os.path.join(BASE_DIR, 'victory_background.png')
+victory_background_path = resource_path('victory_background.png')
 try:
     victory_background = pygame.image.load(victory_background_path).convert()
     victory_background = pygame.transform.scale(victory_background, (WIDTH, HEIGHT))  # 缩放至屏幕大小
@@ -107,16 +132,21 @@ except pygame.error:
 
 # 加载角色图片
 character_images = [
-    {'normal': os.path.join(BASE_DIR, 'character1_normal.png'), 'happy': os.path.join(BASE_DIR, 'character1_happy.png')},
-    {'normal': os.path.join(BASE_DIR, 'character2_normal.png'), 'happy': os.path.join(BASE_DIR, 'character2_happy.png')}
+    {
+        'normal': resource_path('character1_normal.png'),
+        'happy': resource_path('character1_happy.png')
+    },
+    {
+        'normal': resource_path('character2_normal.png'),
+        'happy': resource_path('character2_happy.png')
+    }
 ]
-selected_character = 0  # 默认选择第一个角色
 
 # 加载背景图片
 background_images = [
-    os.path.join(BASE_DIR, 'bg1.png'),
-    os.path.join(BASE_DIR, 'bg2.png'),
-    os.path.join(BASE_DIR, 'bg3.png')
+    resource_path('bg1.png'),
+    resource_path('bg2.png'),
+    resource_path('bg3.png')
 ]
 for bg in background_images:
     if not os.path.exists(bg):
@@ -126,15 +156,16 @@ for bg in background_images:
 
 # 加载剧情图片
 story_images = [
-    os.path.join(BASE_DIR, 'story1.png'),
-    os.path.join(BASE_DIR, 'story2.png'),
-    os.path.join(BASE_DIR, 'story3.png')
+    resource_path('story1.png'),
+    resource_path('story2.png'),
+    resource_path('story3.png')
 ]
 for story in story_images:
     if not os.path.exists(story):
         print(f"剧情图片不存在: {story}")
         pygame.quit()
         sys.exit()
+
 
 # 全局变量
 stack = []  # 存放玩家点击的图案
@@ -163,6 +194,7 @@ character_reaction_time = 0  # 角色互动状态的剩余时间
 # 提示功能
 hint_sequence = []  # 当前提示的图案序列
 hint_calculating = False  # 是否正在计算提示
+hint_lock = Lock()  # 线程锁
 
 # 按钮尺寸
 BUTTON_WIDTH = 200
@@ -178,23 +210,6 @@ quit_game_button = pygame.Rect(WIDTH / 2 - BUTTON_WIDTH / 2, HEIGHT / 2 + 90, BU
 hint_button_rect = pygame.Rect(WIDTH - BUTTON_WIDTH - 40, 20, BUTTON_WIDTH, BUTTON_HEIGHT)
 undo_button_rect = pygame.Rect(WIDTH - BUTTON_WIDTH - 40, 90, BUTTON_WIDTH, BUTTON_HEIGHT)
 
-# 加载和保存排行榜数据
-def load_leaderboard():
-    global leaderboard
-    if os.path.exists(LEADERBOARD_FILE):
-        try:
-            with open(LEADERBOARD_FILE, 'r', encoding='utf-8') as f:
-                leaderboard = json.load(f)
-        except json.JSONDecodeError:
-            leaderboard = []
-    else:
-        leaderboard = []
-
-def save_leaderboard():
-    global leaderboard
-    with open(LEADERBOARD_FILE, 'w', encoding='utf-8') as f:
-        json.dump(leaderboard, f, ensure_ascii=False, indent=4)
-
 # 加载和保存游戏进度
 def load_game():
     global player_name, score, level, stack, board_layers, selected_character
@@ -206,7 +221,6 @@ def load_game():
                 if not saved_games:
                     print("没有可继续的游戏。")
                     return False
-                # 此函数只检查是否有保存的游戏
                 return True
         except (json.JSONDecodeError, KeyError, TypeError):
             print("保存的游戏数据有误，无法加载。")
@@ -298,49 +312,59 @@ def load_specific_game(index):
 
 def save_game():
     global player_name, score, level, stack, board_layers, selected_character
-    data = {}
-    if os.path.exists(SAVEGAME_FILE):
-        try:
-            with open(SAVEGAME_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, KeyError, TypeError):
-            data = {}
-    saved_games = data.get('saved_games', [])
-    
-    # 检查当前角色是否已经保存
-    existing_index = None
-    for idx, game in enumerate(saved_games):
-        if game['player_name'] == player_name and game['selected_character'] == selected_character:
-            existing_index = idx
-            break
-    # 保存 stack 作为 number 列表
-    stack_numbers = [tile['number'] for tile in stack]
-    # 保存 board_layers 作为 number 列表
-    board_layers_data = [
-        [
-            [tile['number'] if tile else None for tile in row]
-            for row in layer
-        ]
-        for layer in board_layers
-    ][:LAYER_COUNT]
-    game_data = {
-        'player_name': player_name,
-        'score': score,
-        'level': level,
-        'stack': stack_numbers,
-        'board_layers': board_layers_data,
-        'selected_character': selected_character  # 保存角色选择
-    }
-    if existing_index is not None:
-        saved_games[existing_index] = game_data
-    else:
-        saved_games.append(game_data)
-    
-    data['saved_games'] = saved_games
-    with open(SAVEGAME_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    with hint_lock:
+        data = {}
+        if os.path.exists(SAVEGAME_FILE):
+            try:
+                with open(SAVEGAME_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, KeyError, TypeError):
+                data = {}
+        saved_games = data.get('saved_games', [])
+        
+        # 构建当前游戏数据
+        stack_numbers = [tile['number'] for tile in stack]
+        board_layers_data = [
+            [
+                [tile['number'] if tile else None for tile in row]
+                for row in layer
+            ]
+            for layer in board_layers
+        ][:LAYER_COUNT]
+        game_data = {
+            'player_name': player_name,
+            'score': score,
+            'level': level,
+            'stack': stack_numbers,
+            'board_layers': board_layers_data,
+            'selected_character': selected_character
+        }
+        
+        # 检查是否需要保存
+        if len(saved_games) < 10:
+            saved_games.append(game_data)
+        else:
+            # 找到最低分
+            min_score = min(saved_games, key=lambda x: x['score'])['score']
+            if score > min_score:
+                # 替换最低分的存档
+                for i, game in enumerate(saved_games):
+                    if game['score'] == min_score:
+                        saved_games[i] = game_data
+                        break
+        
+        # 按分数从高到低排序保存列表
+        saved_games.sort(key=lambda x: x['score'], reverse=True)
+        
+        # 限制保存列表最多为10个
+        if len(saved_games) > 10:
+            saved_games = saved_games[:10]
+        
+        data['saved_games'] = saved_games
+        with open(SAVEGAME_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
 
-# 显示剧情介绍并可按空格键跳过
+# 显示剧情介绍并可按空格键或点击继续
 def show_story():
     for image_file in story_images:
         try:
@@ -359,6 +383,8 @@ def show_story():
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_SPACE:
                         showing = False  # 跳过当前剧情图片
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    showing = False  # 点击鼠标继续
             screen.blit(story_image, (0, 0))
             pygame.display.flip()
             clock.tick(FPS)
@@ -454,7 +480,6 @@ def input_character_name():
 
         pygame.display.flip()
         clock.tick(30)
-
 
 # 启动新游戏
 def start_new_game(name):
@@ -678,10 +703,11 @@ def draw_game_elements():
     screen.blit(level_text, (level_rect.left + 5, level_rect.top + 5))
     # 绘制按钮
     # 绘制提示按钮
-    if hint_calculating:
-        hint_text = font.render("计算中...", True, BUTTON_TEXT_COLOR)
-    else:
-        hint_text = font.render("提示", True, BUTTON_TEXT_COLOR)
+    with hint_lock:
+        if hint_calculating:
+            hint_text = font.render("计算中...", True, BUTTON_TEXT_COLOR)
+        else:
+            hint_text = font.render("提示", True, BUTTON_TEXT_COLOR)
     pygame.draw.rect(screen, HINT_BUTTON_COLOR, hint_button_rect, border_radius=10)
     screen.blit(hint_text, (hint_button_rect.centerx - hint_text.get_width() / 2,
                             hint_button_rect.centery - hint_text.get_height() / 2))
@@ -692,8 +718,10 @@ def draw_game_elements():
                             undo_button_rect.centery - undo_text.get_height() / 2))
 
 # 获取点击位置的图案
-def get_tile_at_pos(pos):
-    for layer in reversed(board_layers):  # 从顶层开始检测
+def get_tile_at_pos(pos, board_layers_param=None):
+    if board_layers_param is None:
+        board_layers_param = board_layers
+    for layer in reversed(board_layers_param):  # 从顶层开始检测
         for row in layer:
             for tile in row:
                 if tile and tile['rect'].collidepoint(pos):
@@ -716,13 +744,14 @@ def handle_click(pos):
     if tile:
         # 检查图案是否被覆盖
         if is_tile_uncovered(tile):
-            # 检查玩家是否点击了提示的图案
-            if hint_sequence and tile == hint_sequence[0]:
-                hint_sequence.pop(0)  # 移除已提示的图案
-                if not hint_sequence:
-                    hint_sequence = []  # 提示序列已用完
-            else:
-                hint_sequence = []  # 玩家未点击提示的图案，清空提示序列
+            with hint_lock:
+                # 检查玩家是否点击了提示的图案
+                if hint_sequence and tile == hint_sequence[0]:
+                    hint_sequence.pop(0)  # 移除已提示的图案
+                    if not hint_sequence:
+                        hint_sequence = []  # 提示序列已用完
+                else:
+                    hint_sequence = []  # 玩家未点击提示的图案，清空提示序列
 
             # 记录原始位置
             tile['original_position'] = {'layer': tile['layer'], 'row': None, 'col': None}
@@ -777,7 +806,8 @@ def check_match():
                 character_state = 'happy'
                 character_reaction_time = int(FPS * 1)  # 互动状态持续1秒
                 # 清空提示序列
-                hint_sequence = []
+                with hint_lock:
+                    hint_sequence = []
                 changed = True
                 break  # 重新检查
         if changed:
@@ -825,21 +855,21 @@ def next_level():
         game_win("恭喜您完成所有关卡，游戏胜利！")
     else:
         stack = []  # 重置栈
-        hint_sequence = []
+        with hint_lock:
+            hint_sequence = []
         create_board()
         save_game()  # 保存游戏进度
 
 # 游戏结束
 def game_over(message):
-    global leaderboard, current_state
+    global current_state
     screen.fill(BG_COLOR)
     message_text = big_font.render(message, True, (178, 34, 34))  # Firebrick
     rect = message_text.get_rect(center=(WIDTH / 2, HEIGHT / 2 - 50))
     screen.blit(message_text, rect)
 
-    # 记录分数到排行榜
-    leaderboard.append({'name': player_name, 'score': score})
-    save_leaderboard()
+    # 记录分数到排行榜（存档）
+    save_game()
 
     # 显示返回主菜单的提示
     return_text = font.render("返回主菜单...", True, BLACK)
@@ -853,7 +883,7 @@ def game_over(message):
 
 # 游戏胜利
 def game_win(message):
-    global leaderboard, current_state
+    global current_state
 
     # 绘制胜利界面背景图片
     screen.blit(victory_background, (0, 0))
@@ -863,9 +893,8 @@ def game_win(message):
     rect = message_text.get_rect(center=(WIDTH / 2, HEIGHT / 2 - 50))
     screen.blit(message_text, rect)
 
-    # 记录分数到排行榜
-    leaderboard.append({'name': player_name, 'score': score})
-    save_leaderboard()
+    # 记录分数到排行榜（存档）
+    save_game()
 
     # 显示返回主菜单的提示
     return_text = font.render("返回主菜单...", True, BLACK)
@@ -877,14 +906,14 @@ def game_win(message):
     current_state = STATE_MAIN_MENU
     save_game()  # 保存游戏进度
 
-
 # 提示功能
 def show_hint():
     global hint_sequence, hint_calculating
-    if hint_calculating:
-        return  # 已经在计算中，避免重复计算
-    hint_sequence = []
-    hint_calculating = True
+    with hint_lock:
+        if hint_calculating:
+            return  # 已经在计算中，避免重复计算
+        hint_sequence = []
+        hint_calculating = True
     threading.Thread(target=calculate_hint).start()
 
 def calculate_hint():
@@ -897,7 +926,8 @@ def calculate_hint():
         # 如果找不到，使用 DFS 算法计算提示
         root_state = (stack.copy(), copy_board_layers(board_layers))
         hint_sequence = find_hint_sequence(root_state)
-    hint_calculating = False
+    with hint_lock:
+        hint_calculating = False
     if hint_sequence:
         print("Hint sequence generated:")
         for tile in hint_sequence:
@@ -1066,6 +1096,17 @@ def undo_move():
         col = pos['col']
         if board_layers[layer][row][col] is None:
             board_layers[layer][row][col] = tile
+            # 重新计算 tile 的 rect
+            offset = layer_offsets[layer]
+            rand_offset_x = random.randint(-TILE_SIZE // 8, TILE_SIZE // 8)
+            rand_offset_y = random.randint(-TILE_SIZE // 8, TILE_SIZE // 8)
+            tile['rect'] = pygame.Rect(
+                col * TILE_SIZE + offset['x'] + rand_offset_x + 150,  # 右移，避免遮挡角色
+                row * TILE_SIZE + offset['y'] + rand_offset_y,
+                TILE_SIZE,
+                TILE_SIZE
+            )
+            tile['layer'] = layer
             # 清除 tile 的原始位置
             tile['original_position'] = None
         else:
@@ -1074,12 +1115,14 @@ def undo_move():
         print("无法撤销此图案，没有原始位置记录")
 
     # 撤销操作后，清空提示序列
-    hint_sequence = []
+    with hint_lock:
+        hint_sequence = []
     save_game()  # 保存游戏进度
 
 # 绘制主菜单界面
 def draw_main_menu():
-    screen.fill(BG_COLOR)
+    # 绘制主菜单背景图片
+    screen.blit(menu_background, (0, 0))
 
     # 绘制标题
     title_text = title_font.render("投喂精灵小游戏", True, BLACK)
@@ -1102,11 +1145,8 @@ def handle_main_menu_click(pos):
     if start_game_button.collidepoint(pos):
         current_state = STATE_CHARACTER_SELECTION
     elif continue_game_button.collidepoint(pos):
-        if os.path.exists(SAVEGAME_FILE):
-            if load_game():
-                current_state = STATE_CONTINUE_GAME_SELECTION  # 进入选择继续游戏的界面
-            else:
-                show_no_continue_game_message()
+        if load_game():
+            current_state = STATE_CONTINUE_GAME_SELECTION  # 进入选择继续游戏的界面
         else:
             show_no_continue_game_message()
     elif leaderboard_button.collidepoint(pos):
@@ -1128,29 +1168,50 @@ def show_no_continue_game_message():
     global current_state
     current_state = STATE_MAIN_MENU
 
-def draw_main_menu():
-    # 绘制主菜单背景图片
+# 绘制排行榜界面
+def draw_leaderboard():
     screen.blit(menu_background, (0, 0))
-
-    # 绘制标题
-    title_text = title_font.render("投喂精灵小游戏", True, BLACK)
-    screen.blit(title_text, (WIDTH / 2 - title_text.get_width() / 2, HEIGHT / 2 - 300))
-
-    # 绘制按钮
-    for button in [start_game_button, continue_game_button, leaderboard_button, quit_game_button]:
-        pygame.draw.rect(screen, BUTTON_COLOR, button, border_radius=10)
-
-    # 绘制按钮文字
-    buttons_text = ["开始游戏", "继续游戏", "排行榜", "退出游戏"]
-    for i, button in enumerate([start_game_button, continue_game_button, leaderboard_button, quit_game_button]):
-        text = font.render(buttons_text[i], True, BUTTON_TEXT_COLOR)
-        screen.blit(text, (button.centerx - text.get_width() / 2,
-                           button.centery - text.get_height() / 2))
-
+    title_text = title_font.render("排行榜", True, BLACK)
+    screen.blit(title_text, (WIDTH / 2 - title_text.get_width() / 2, 50))
+    
+    # 加载所有保存的游戏
+    if os.path.exists(SAVEGAME_FILE):
+        try:
+            with open(SAVEGAME_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                saved_games = data.get('saved_games', [])
+                if not saved_games:
+                    raise ValueError("没有可显示的排行榜数据。")
+                # 按分数从高到低排序
+                sorted_leaderboard = sorted(saved_games, key=lambda x: x['score'], reverse=True)
+                # 仅显示前10名
+                for idx, game in enumerate(sorted_leaderboard[:10]):
+                    name = game.get('player_name', '未知')
+                    score_val = game.get('score', 0)
+                    level_val = game.get('level', 1)
+                    entry_text = font.render(f"{idx + 1}. {name} - 分数: {score_val} - 关卡: {level_val}", True, BLACK)
+                    entry_rect = pygame.Rect(WIDTH / 2 - 200, 150 + idx * 40, 400, 30)
+                    pygame.draw.rect(screen, BUTTON_COLOR, entry_rect, border_radius=5)
+                    screen.blit(entry_text, (entry_rect.centerx - entry_text.get_width() / 2,
+                                             entry_rect.centery - entry_text.get_height() / 2))
+        except (json.JSONDecodeError, KeyError, ValueError):
+            message = "暂无可显示的排行榜数据。"
+            message_text = font.render(message, True, BLACK)
+            rect = message_text.get_rect(center=(WIDTH / 2, HEIGHT / 2))
+            screen.blit(message_text, rect)
+    else:
+        message = "暂无可显示的排行榜数据。"
+        message_text = font.render(message, True, BLACK)
+        rect = message_text.get_rect(center=(WIDTH / 2, HEIGHT / 2))
+        screen.blit(message_text, rect)
+    
+    # 显示返回提示
+    return_text = font.render("按 ESC 返回主菜单", True, BLACK)
+    screen.blit(return_text, (WIDTH / 2 - return_text.get_width() / 2, HEIGHT - 100))
 
 # 继续游戏界面绘制
 def draw_continue_game_selection():
-    screen.fill(BG_COLOR)
+    screen.blit(menu_background, (0, 0))
     # 绘制标题
     title_text = big_font.render("选择要继续的游戏", True, BLACK)
     screen.blit(title_text, (WIDTH / 2 - title_text.get_width() / 2, 50))
@@ -1163,8 +1224,10 @@ def draw_continue_game_selection():
                 saved_games = data.get('saved_games', [])
                 if not saved_games:
                     raise ValueError("没有可继续的游戏。")
+                # 按分数从高到低排序
+                sorted_saved_games = sorted(saved_games, key=lambda x: x['score'], reverse=True)
                 # 显示每个保存的游戏
-                for idx, game in enumerate(saved_games):
+                for idx, game in enumerate(sorted_saved_games[:10]):
                     name = game.get('player_name', '未知')
                     score_val = game.get('score', 0)
                     level_val = game.get('level', 1)
@@ -1201,8 +1264,10 @@ def handle_continue_game_selection_click(pos):
                 if not saved_games:
                     show_no_continue_game_message()
                     return
+                # 按分数从高到低排序
+                sorted_saved_games = sorted(saved_games, key=lambda x: x['score'], reverse=True)
                 # 每个保存的游戏占用一个区域，假设每个区域高度为60，起始y为150
-                for idx, game in enumerate(saved_games):
+                for idx, game in enumerate(sorted_saved_games[:10]):
                     entry_rect = pygame.Rect(WIDTH / 2 - 200, 150 + idx * 60, 400, 50)
                     if entry_rect.collidepoint(pos):
                         if load_specific_game(idx):
@@ -1218,6 +1283,10 @@ def handle_continue_game_selection_click(pos):
 # 主游戏循环
 def main_loop():
     global character_state, character_reaction_time, current_state
+
+    # 控制保存频率
+    last_save_time = time.time()
+    SAVE_INTERVAL = 5  # 秒
 
     running = True
     while running:
@@ -1261,7 +1330,11 @@ def main_loop():
                 character_reaction_time -= 1
                 if character_reaction_time <= 0:
                     character_state = 'normal'
-            save_game()  # 定期保存游戏进度
+            # 限制保存频率
+            current_time = time.time()
+            if current_time - last_save_time > SAVE_INTERVAL:
+                save_game()
+                last_save_time = current_time
 
         # 根据当前状态绘制相应界面
         if current_state == STATE_MAIN_MENU:
@@ -1345,20 +1418,14 @@ def handle_animations():
         # 这里可以添加更多动画效果，如角色表情变化、闪烁等
         pass
 
-# 保存排行榜时确保保存多个分数
-def add_to_leaderboard(name, score_val):
-    global leaderboard
-    leaderboard.append({'name': name, 'score': score_val})
-    save_leaderboard()
-
 # 主函数入口
 def prepare_game():
-    load_leaderboard()
+    load_game()
     show_story()          # 显示剧情介绍
     # 角色选择和名字输入现在在主菜单点击“开始游戏”后进行
     # create_board()        # 创建棋盘现在在 start_new_game 中进行
 
-# 启动游戏
+# 主程序入口
 if __name__ == "__main__":
     prepare_game()
     main_loop()
